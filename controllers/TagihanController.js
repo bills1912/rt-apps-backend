@@ -26,6 +26,40 @@ module.exports = class TagihanController {
             }
             const data = await Tagihan.create(payload)
 
+
+            let usersToBill = [];
+            
+            if (targetUserIds && Array.isArray(targetUserIds) && targetUserIds.length > 0) {
+                usersToBill = await User.findAll({
+                    where: {
+                        id: { [Op.in]: targetUserIds },
+                        role: 'user' // Pastikan hanya role user
+                    }
+                });
+            } else {
+                usersToBill = await User.findAll({
+                    where: { role: 'user' }
+                });
+            }
+
+            // 3. Siapkan data untuk tabel pivot (tagihan_users)
+            if (usersToBill.length > 0) {
+                const tagihanUsersPayload = usersToBill.map(user => ({
+                    userId: user.id,
+                    tagihanId: data.id,
+                    status: 'processing', // Default status (belum bayar)
+                    tagihanSnapshot: payload, // Opsional: Simpan snapshot harga saat tagihan dibuat
+                    userInfo: { // Opsional: Simpan snapshot info user
+                        name: user.name,
+                        email: user.email,
+                        kk: user.kk
+                    }
+                }));
+
+                // Gunakan bulkCreate agar cepat (satu kali query untuk banyak user)
+                await TagihanUser.bulkCreate(tagihanUsersPayload);
+            }
+
             const payloadNotification = {
                 tagihanId: data.id,
                 forRole: 'user',
