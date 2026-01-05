@@ -1,0 +1,16 @@
+const path = require('path');
+
+// Auto-detect Railway environment
+const isRailway = process.env.MYSQLHOST || process.env.RAILWAY_ENVIRONMENT;
+
+// Force production environment in Railway
+if (isRailway) {
+    process.env.NODE_ENV = 'production';
+}
+
+module.exports = {
+    'config': path.resolve('config', 'config.js'),
+    'models-path': path.resolve('models'),
+    'seeders-path': path.resolve('seeders'),
+    'migrations-path': path.resolve('migrations')
+};
