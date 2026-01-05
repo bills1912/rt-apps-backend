@@ -8,7 +8,7 @@ const logger = require('./utils/logger')
 require('dotenv').config()
 const PORT = process.env.PORT || 3000;
 const app = express()
-const HOST = '192.168.137.1';
+const HOST = '0.0.0.0';
 const http = require('http')
 const server = http.createServer(app);
 const authRoutes = require('./router/auth')
