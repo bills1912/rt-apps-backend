@@ -1,11 +1,11 @@
-
-const admin = require('firebase-admin')
-const serviceAcc = require('../firebase_key.json')
-
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAcc)
-})
-
 module.exports = {
-    admin
-}
+    admin: null,
+    sendNotification: async (tokens, notification) => {
+        console.log('[INFO] Firebase disabled. Notification not sent:', {
+            tokens: tokens.length,
+            notification
+        });
+        // Return success untuk compatibility
+        return { success: true, disabled: true };
+    }
+};

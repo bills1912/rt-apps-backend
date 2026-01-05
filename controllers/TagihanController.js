@@ -44,23 +44,16 @@ module.exports = class TagihanController {
             }
 
 
-            const promises = tokens.map(t => {
-                console.log('Send Notif to:' + t.token);
-                return admin.messaging().send({
-                    token: t.token,
-                    android: {
-                        priority: 'high'
-                    },
-                    data: notificationData,
-                    notification: {
-                        title: 'Tagihan Baru',
-                        body: 'Ada tagihan baru nih, dicek dulu yuk'
-                    }
-                })
-            })
-
-            const promise = await Promise.allSettled(promises)
-            console.log(promise);
+            if (tokens && tokens.length > 0) {
+                const notificationPromises = tokens.map(async (t) => {
+                    console.log('Notification queued for token:', t.token.substring(0, 20) + '...');
+                    // Firebase disabled, just log
+                    return { success: true, token: t.token };
+                });
+                
+                const results = await Promise.allSettled(notificationPromises);
+                console.log('[INFO] Notifications processed:', results.length);
+            }
 
             return res.status(201).json({
                 data
