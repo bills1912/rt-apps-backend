@@ -12,11 +12,14 @@ module.exports = class TagihanController {
     static async create(req, res) {
         try {
             const { body } = req
-            const { items, tagihanDate, tagihanName, tagihanDescription } = body
+            const { items, tagihanDate, tagihanName, tagihanDescription, targetUserIds } = body 
+            
+            // Hitung total harga
             let totalPrice = 0;
             items.forEach((i) => {
                 totalPrice += i.price
             })
+
             const payload = {
                 items,
                 tagihanDate: dayjs(tagihanDate).toDate(),
@@ -24,77 +27,78 @@ module.exports = class TagihanController {
                 tagihanName,
                 tagihanDescription
             }
+
+            // 1. Buat Master Tagihan
             const data = await Tagihan.create(payload)
 
-
+            // 2. Tentukan User Target (Filter User)
             let usersToBill = [];
             
             if (targetUserIds && Array.isArray(targetUserIds) && targetUserIds.length > 0) {
+                // KASUS A: Jika Admin memilih user tertentu (Spesifik)
                 usersToBill = await User.findAll({
                     where: {
                         id: { [Op.in]: targetUserIds },
-                        role: 'user' // Pastikan hanya role user
+                        role: 'user'
                     }
                 });
             } else {
+                // KASUS B: Jika Admin tidak memilih user (Global / Semua User)
                 usersToBill = await User.findAll({
                     where: { role: 'user' }
                 });
             }
 
-            // 3. Siapkan data untuk tabel pivot (tagihan_users)
-            if (usersToBill.length > 0) {
-                const tagihanUsersPayload = usersToBill.map(user => ({
-                    userId: user.id,
-                    tagihanId: data.id,
-                    status: 'processing', // Default status (belum bayar)
-                    tagihanSnapshot: payload, // Opsional: Simpan snapshot harga saat tagihan dibuat
-                    userInfo: { // Opsional: Simpan snapshot info user
-                        name: user.name,
-                        email: user.email,
-                        kk: user.kk
-                    }
-                }));
-
-                // Gunakan bulkCreate agar cepat (satu kali query untuk banyak user)
-                await TagihanUser.bulkCreate(tagihanUsersPayload);
+            if (usersToBill.length === 0) {
+                return res.status(400).json({ message: "Tidak ada user yang ditemukan untuk ditagih." });
             }
 
-            const payloadNotification = {
+            // 3. Masukkan ke Tabel Pivot (TagihanUser)
+            // Ini agar tagihan muncul di list tagihan masing-masing user
+            const tagihanUsersPayload = usersToBill.map(user => ({
+                userId: user.id,
                 tagihanId: data.id,
+                status: 'processing', // Default belum bayar
+                tagihanSnapshot: payload, // Simpan harga saat ini agar aman jika master berubah
+                userInfo: {
+                    name: user.name,
+                    email: user.email,
+                    kk: user.kk
+                }
+            }));
+
+            await TagihanUser.bulkCreate(tagihanUsersPayload);
+
+            // 4. Masukkan ke Tabel Notifications (Database Only)
+            // Ini agar muncul di menu "Lonceng/Inbox" aplikasi
+            const messageTitle = 'Tagihan Baru';
+            const messageBody = `Tagihan ${tagihanName} untuk bulan ${dayjs(tagihanDate).format('MMMM')} telah terbit.`;
+
+            const notificationsPayload = usersToBill.map(user => ({
+                tagihanId: data.id,
+                userId: user.id,     // Notifikasi spesifik per user
                 forRole: 'user',
-                isGlobal: true,
+                isGlobal: false,     // False karena kita insert per user
                 type: 'created',
-                title: 'Tagihan Baru',
-                message: `Tagihan Baru untuk bulan ${dayjs(tagihanDate).format('MMMM')} sudah terbit`
-            }
+                title: messageTitle,
+                message: messageBody
+            }));
 
-            await Notification.create(payloadNotification)
-            const tokens = await FcmToken.findAll()
+            await Notification.bulkCreate(notificationsPayload);
 
-            const notificationData = {
-                title: payloadNotification.title,
-                body: payloadNotification.message
-            }
+            // 5. Response Sukses
+            res.status(201).json({
+                message: "Tagihan berhasil dibuat dan notifikasi internal disimpan.",
+                data: data,
+                stats: {
+                    usersBilled: usersToBill.length,
+                    notificationsStored: notificationsPayload.length
+                }
+            });
 
-
-            if (tokens && tokens.length > 0) {
-                const notificationPromises = tokens.map(async (t) => {
-                    console.log('Notification queued for token:', t.token.substring(0, 20) + '...');
-                    // Firebase disabled, just log
-                    return { success: true, token: t.token };
-                });
-                
-                const results = await Promise.allSettled(notificationPromises);
-                console.log('[INFO] Notifications processed:', results.length);
-            }
-
-            return res.status(201).json({
-                data
-            })
         } catch (error) {
-            console.log(error);
-            return res.status(500).json({ error })
+            console.error(error);
+            res.status(500).json({ error: error.message || "Internal Server Error" })
         }
     }
 
