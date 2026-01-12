@@ -1,10 +1,8 @@
-
 const dayjs = require("dayjs");
 const { admin } = require("../utils/firebase");
 const { Tagihan, TagihanUser, Notification, FcmToken, User } = require("../models");
 const TagihanService = require("../services/tagihan");
 const { formatCreatedAt } = require("../utils/time");
-// const sharp = require('sharp');
 const { create } = require("../utils/imgur");
 const { Op } = require("sequelize");
 
@@ -35,7 +33,6 @@ module.exports = class TagihanController {
             let usersToBill = [];
             
             if (targetUserIds && Array.isArray(targetUserIds) && targetUserIds.length > 0) {
-                // KASUS A: Jika Admin memilih user tertentu (Spesifik)
                 usersToBill = await User.findAll({
                     where: {
                         id: { [Op.in]: targetUserIds },
@@ -43,7 +40,6 @@ module.exports = class TagihanController {
                     }
                 });
             } else {
-                // KASUS B: Jika Admin tidak memilih user (Global / Semua User)
                 usersToBill = await User.findAll({
                     where: { role: 'user' }
                 });
@@ -54,12 +50,11 @@ module.exports = class TagihanController {
             }
 
             // 3. Masukkan ke Tabel Pivot (TagihanUser)
-            // Ini agar tagihan muncul di list tagihan masing-masing user
             const tagihanUsersPayload = usersToBill.map(user => ({
                 userId: user.id,
                 tagihanId: data.id,
-                status: 'processing', // Default belum bayar
-                tagihanSnapshot: payload, // Simpan harga saat ini agar aman jika master berubah
+                status: 'unpaid', // FIX: Ganti dari 'processing' ke 'unpaid' untuk tagihan baru
+                tagihanSnapshot: payload,
                 userInfo: {
                     name: user.name,
                     email: user.email,
@@ -69,16 +64,15 @@ module.exports = class TagihanController {
 
             await TagihanUser.bulkCreate(tagihanUsersPayload);
 
-            // 4. Masukkan ke Tabel Notifications (Database Only)
-            // Ini agar muncul di menu "Lonceng/Inbox" aplikasi
+            // 4. Masukkan ke Tabel Notifications
             const messageTitle = 'Tagihan Baru';
             const messageBody = `Tagihan ${tagihanName} untuk bulan ${dayjs(tagihanDate).format('MMMM')} telah terbit.`;
 
             const notificationsPayload = usersToBill.map(user => ({
                 tagihanId: data.id,
-                userId: user.id,     // Notifikasi spesifik per user
+                userId: user.id,
                 forRole: 'user',
-                isGlobal: false,     // False karena kita insert per user
+                isGlobal: false,
                 type: 'created',
                 title: messageTitle,
                 message: messageBody
@@ -120,43 +114,22 @@ module.exports = class TagihanController {
             })
 
             if (user.role == 'user') {
+                // FIX: Ambil semua status untuk cek pembayaran
                 const tagihanUsers = await TagihanUser.findAll({
-                    where: { userId: user.id }
+                    where: { 
+                        userId: user.id,
+                        status: { [Op.in]: ['processing', 'verified'] } // Hanya yang sudah dibayar
+                    }
                 })
 
+                // Map tagihan dengan status pembayaran
                 tagihan = tagihan.map((t) => {
+                    const isPaid = tagihanUsers.some(tu => tu.tagihanId === t.id);
                     return {
                         ...t,
-                        isPaid: false
+                        isPaid: isPaid
                     }
                 })
-
-                let latestTagihanUnpaid;
-                let latestTagihanPaid;
-
-                if (tagihanUsers.length > 0) {
-                    tagihanUsers.forEach((d) => {
-                        const data = d.toJSON()
-                        const isPaid = tagihan.findIndex((t) => t.id == data.tagihanId)
-                        if (isPaid != -1) {
-                            tagihan[isPaid].isPaid = true
-                        }
-                    })
-
-                    for (const t of tagihan) {
-                        if (t.isPaid) {
-                            latestTagihanPaid = t;
-                        } else {
-                            latestTagihanUnpaid = t;
-                            break;
-                        }
-                    }
-
-                }
-                if (!latestTagihanPaid) latestTagihanPaid = tagihan[0]
-
-                if (!latestTagihanUnpaid) latestTagihanUnpaid = tagihan[0]
-                tagihan = [latestTagihanPaid, latestTagihanUnpaid]
             }
 
             return res.status(200).json({
@@ -199,11 +172,9 @@ module.exports = class TagihanController {
             images = Array.isArray(images) ? images : [images];
             const tagihan = await TagihanService.findOneById(tagihanId)
 
-
             const imgLink = await create(images[0])
 
-            const userInfo =
-            {
+            const userInfo = {
                 date: dayjs().toDate(),
                 transferProof: [imgLink],
                 description
@@ -248,7 +219,8 @@ module.exports = class TagihanController {
                 include: [
                     { model: Tagihan, as: 'tagihanDetail' },
                     { model: User, as: 'user' }
-                ]
+                ],
+                order: [['createdAt', 'DESC']] // FIX: Tambah order by terbaru
             })
 
             let tagihan = tagihanUsers.map(doc => {
@@ -256,7 +228,7 @@ module.exports = class TagihanController {
                 return {
                     id: data.id,
                     ...data,
-                    tagihan: data.tagihanSnapshot || data.tagihanDetail, // Fallback to relation if snapshot missing
+                    tagihan: data.tagihanSnapshot || data.tagihanDetail,
                     paidAt: formatCreatedAt(data, 'paidAt')
                 }
             })
@@ -475,8 +447,7 @@ module.exports = class TagihanController {
 
             const imgLink = await create(images[0])
 
-            const userInfo =
-            {
+            const userInfo = {
                 date: dayjs().toDate(),
                 transferProof: [imgLink],
                 description
@@ -525,7 +496,8 @@ module.exports = class TagihanController {
                 where: whereClause,
                 include: [
                     { model: Tagihan, as: 'tagihanDetail' }
-                ]
+                ],
+                order: [['updatedAt', 'DESC']] // FIX: Order by updatedAt untuk history
             })
 
             let tagihan = tagihanUsers.map(doc => {
@@ -538,8 +510,10 @@ module.exports = class TagihanController {
                 }
             })
 
+            // FIX: Perbaiki filter bulan
             if (month) {
                 tagihan = tagihan.filter((t) => {
+                    if (!t.tagihan || !t.tagihan.tagihanDate) return false;
                     const tagihanMonth = dayjs(t.tagihan.tagihanDate).format('MMMM');
                     return tagihanMonth.toLowerCase() === month.toLowerCase();
                 });
