@@ -26,51 +26,59 @@ module.exports = class DataWargaController {
                 order: [['nama', 'ASC']]
             });
 
+            console.log(`👥 Found ${wargaData.length} warga records`);
+
             // Convert ke plain object
             wargaData = wargaData.map(w => w.get({ plain: true }));
 
-            // B. Ambil Data Tagihan LUNAS (Cek model TagihanUser & Tagihan ada atau tidak)
-            if (TagihanUser && Tagihan) {
-                const paidBills = await TagihanUser.findAll({
-                    where: { 
-                        status: 'verified' // Hanya yang sudah verified
-                    },
-                    include: [{
-                        model: Tagihan,
-                        as: 'tagihanDetail',
-                        attributes: ['tagihanDate']
-                    }]
-                });
+            // B. Ambil Data Tagihan LUNAS
+            const paidBills = await TagihanUser.findAll({
+                where: { 
+                    status: 'verified'
+                },
+                include: [{
+                    model: Tagihan,
+                    as: 'tagihanDetail',
+                    attributes: ['tagihanDate']
+                }]
+            });
 
-                const monthNames = [
-                    'January', 'February', 'March', 'April', 'May', 'June',
-                    'July', 'August', 'September', 'October', 'November', 'December'
-                ];
+            console.log(`💰 Found ${paidBills.length} verified payments`);
 
-                // C. Gabungkan Data (Looping)
-                wargaData.forEach(warga => {
-                    if (!warga.paymentStatus) warga.paymentStatus = {};
+            const monthNames = [
+                'January', 'February', 'March', 'April', 'May', 'June',
+                'July', 'August', 'September', 'October', 'November', 'December'
+            ];
 
-                    if (warga.user && warga.user.id) {
-                        const userBills = paidBills.filter(b => b.userId === warga.user.id);
+            // C. Gabungkan Data (Looping)
+            wargaData.forEach(warga => {
+                if (!warga.paymentStatus) warga.paymentStatus = {};
 
-                        userBills.forEach(bill => {
-                            if (bill.tagihanDetail && bill.tagihanDetail.tagihanDate) {
-                                const date = new Date(bill.tagihanDetail.tagihanDate);
-                                const monthName = monthNames[date.getMonth()];
-                                
-                                if (monthName) {
-                                    warga.paymentStatus[monthName] = true;
-                                }
+                if (warga.user && warga.user.id) {
+                    const userBills = paidBills.filter(b => b.userId === warga.user.id);
+
+                    console.log(`📋 User ${warga.user.name} (ID: ${warga.user.id}) has ${userBills.length} verified bills`);
+
+                    userBills.forEach(bill => {
+                        if (bill.tagihanDetail && bill.tagihanDetail.tagihanDate) {
+                            const date = new Date(bill.tagihanDetail.tagihanDate);
+                            const monthName = monthNames[date.getMonth()];
+                            
+                            console.log(`  ✅ Paid in ${monthName} (${date.toISOString()})`);
+                            
+                            if (monthName) {
+                                warga.paymentStatus[monthName] = true;
                             }
-                        });
-                    }
-                });
-            }
+                        }
+                    });
+                }
+            });
+
+            console.log('✅ Data warga with payment status prepared');
 
             return res.status(200).json({ data: wargaData });
         } catch (error) {
-            console.log("Error getAllWarga:", error);
+            console.error("❌ Error getAllWarga:", error);
             return res.status(500).json({ error: error.message });
         }
     }
@@ -189,14 +197,19 @@ module.exports = class DataWargaController {
         try {
             const { month } = req.query;
             
-            // Get all warga
+            console.log('📊 Getting payment stats for month:', month);
+            
+            // Get all warga with their user data
             const allWarga = await DataWarga.findAll({
                 include: [{
                     model: User,
                     as: 'user',
-                    attributes: ['id']
+                    attributes: ['id', 'name'],
+                    where: { role: 'user' }
                 }]
             });
+            
+            console.log(`👥 Total warga found: ${allWarga.length}`);
             
             let stats = {
                 totalWarga: allWarga.length,
@@ -211,25 +224,34 @@ module.exports = class DataWargaController {
                 'July', 'August', 'September', 'October', 'November', 'December'
             ];
 
-            if (month) {
-                // Ambil data pembayaran verified untuk bulan tertentu
-                const paidBills = await TagihanUser.findAll({
-                    where: { status: 'verified' },
-                    include: [{
-                        model: Tagihan,
-                        as: 'tagihanDetail',
-                        attributes: ['tagihanDate'],
-                        required: true
-                    }]
-                });
+            // Ambil SEMUA pembayaran verified
+            const paidBills = await TagihanUser.findAll({
+                where: { status: 'verified' },
+                include: [{
+                    model: Tagihan,
+                    as: 'tagihanDetail',
+                    attributes: ['tagihanDate'],
+                    required: true
+                }],
+                attributes: ['userId', 'status']
+            });
 
-                // Filter by month
+            console.log(`💰 Total verified payments found: ${paidBills.length}`);
+
+            if (month) {
+                // Stats untuk bulan tertentu
                 const paidUserIds = new Set();
+                
                 paidBills.forEach(bill => {
                     if (bill.tagihanDetail && bill.tagihanDetail.tagihanDate) {
-                        const billMonth = dayjs(bill.tagihanDetail.tagihanDate).format('MMMM');
+                        const billDate = new Date(bill.tagihanDetail.tagihanDate);
+                        const billMonth = months[billDate.getMonth()];
+                        
+                        console.log(`📅 Bill from user ${bill.userId}: ${billMonth}`);
+                        
                         if (billMonth === month) {
                             paidUserIds.add(bill.userId);
+                            console.log(`✅ User ${bill.userId} paid in ${month}`);
                         }
                     }
                 });
@@ -237,24 +259,18 @@ module.exports = class DataWargaController {
                 stats.paidCount = paidUserIds.size;
                 stats.unpaidCount = allWarga.length - stats.paidCount;
                 stats.percentage = allWarga.length > 0 ? (stats.paidCount / allWarga.length) * 100 : 0;
+                
+                console.log(`📈 Stats for ${month}: ${stats.paidCount} paid, ${stats.unpaidCount} unpaid`);
             } else {
-                // Monthly stats for all months
-                const paidBills = await TagihanUser.findAll({
-                    where: { status: 'verified' },
-                    include: [{
-                        model: Tagihan,
-                        as: 'tagihanDetail',
-                        attributes: ['tagihanDate'],
-                        required: true
-                    }]
-                });
-
+                // Monthly stats untuk semua bulan
                 months.forEach(m => {
                     const paidUserIds = new Set();
                     
                     paidBills.forEach(bill => {
                         if (bill.tagihanDetail && bill.tagihanDetail.tagihanDate) {
-                            const billMonth = dayjs(bill.tagihanDetail.tagihanDate).format('MMMM');
+                            const billDate = new Date(bill.tagihanDetail.tagihanDate);
+                            const billMonth = months[billDate.getMonth()];
+                            
                             if (billMonth === m) {
                                 paidUserIds.add(bill.userId);
                             }
@@ -270,7 +286,7 @@ module.exports = class DataWargaController {
             
             return res.status(200).json({ data: stats });
         } catch (error) {
-            console.log('Error in getPaymentStats:', error);
+            console.error('❌ Error in getPaymentStats:', error);
             return res.status(500).json({ error: error.message });
         }
     }
