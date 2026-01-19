@@ -1,6 +1,6 @@
 const dayjs = require("dayjs");
 const { admin } = require("../utils/firebase");
-const { Tagihan, TagihanUser, Notification, FcmToken, User } = require("../models");
+const { Tagihan, TagihanUser, Notification, FcmToken, User, LaporanKeuangan } = require("../models");
 const TagihanService = require("../services/tagihan");
 const { formatCreatedAt } = require("../utils/time");
 const { create } = require("../utils/imgur");
@@ -53,7 +53,7 @@ module.exports = class TagihanController {
             const tagihanUsersPayload = usersToBill.map(user => ({
                 userId: user.id,
                 tagihanId: data.id,
-                status: 'unpaid', // FIX: Ganti dari 'processing' ke 'unpaid' untuk tagihan baru
+                status: 'unpaid',
                 tagihanSnapshot: payload,
                 userInfo: {
                     name: user.name,
@@ -114,15 +114,13 @@ module.exports = class TagihanController {
             })
 
             if (user.role == 'user') {
-                // FIX: Ambil semua status untuk cek pembayaran
                 const tagihanUsers = await TagihanUser.findAll({
                     where: { 
                         userId: user.id,
-                        status: { [Op.in]: ['processing', 'verified'] } // Hanya yang sudah dibayar
+                        status: { [Op.in]: ['processing', 'verified'] }
                     }
                 })
 
-                // Map tagihan dengan status pembayaran
                 tagihan = tagihan.map((t) => {
                     const isPaid = tagihanUsers.some(tu => tu.tagihanId === t.id);
                     return {
@@ -220,7 +218,7 @@ module.exports = class TagihanController {
                     { model: Tagihan, as: 'tagihanDetail' },
                     { model: User, as: 'user' }
                 ],
-                order: [['createdAt', 'DESC']] // FIX: Tambah order by terbaru
+                order: [['createdAt', 'DESC']]
             })
 
             let tagihan = tagihanUsers.map(doc => {
@@ -392,20 +390,20 @@ module.exports = class TagihanController {
 
     static async updateTagihanUser(req, res) {
         try {
-            const { params, body } = req
+            const { params, body, user } = req
             const { id } = params
             const { status, description } = body
             const { images } = body
             let imagesAdmin = [];
 
-            const tagihan = await TagihanService.findTagihanUserOneById(id)
-            if (!tagihan) {
+            const tagihanUser = await TagihanService.findTagihanUserOneById(id)
+            if (!tagihanUser) {
                 return res.status(404).json({
                     error: 'data not found'
                 })
             }
 
-            let adminReply = tagihan.adminReply || []
+            let adminReply = tagihanUser.adminReply || []
             const adminReplyPayload = {
                 description: description ?? null,
                 images: imagesAdmin,
@@ -427,6 +425,34 @@ module.exports = class TagihanController {
             }, {
                 where: { id }
             })
+
+            // **INTEGRASI LAPORAN KEUANGAN**
+            // Jika status berubah menjadi 'verified', otomatis tambahkan ke laporan pemasukan
+            if (status === 'verified') {
+                // Get tagihan details
+                let tagihanSnapshot = tagihanUser.tagihan;
+                if (typeof tagihanSnapshot === 'string') {
+                    tagihanSnapshot = JSON.parse(tagihanSnapshot);
+                }
+
+                // Get user details
+                const userDetail = await User.findByPk(tagihanUser.userId);
+
+                // Create laporan pemasukan
+                await LaporanKeuangan.create({
+                    tanggal: dayjs().toDate(),
+                    jenisTransaksi: 'pemasukan',
+                    kategori: 'Iuran Warga',
+                    pihakKetiga: userDetail ? userDetail.name : 'Warga',
+                    jumlah: tagihanSnapshot.totalPrice,
+                    keterangan: `Pembayaran ${tagihanSnapshot.tagihanName || 'Iuran'} - ${userDetail ? userDetail.name : 'Warga'}`,
+                    periode: dayjs(tagihanSnapshot.tagihanDate).format('YYYY-MM'),
+                    buktiTransaksi: [],
+                    createdBy: user.id
+                });
+
+                console.log('✅ Laporan pemasukan otomatis dibuat untuk tagihan user ID:', id);
+            }
 
             return res.status(200).json({
                 data: 'success'
@@ -497,7 +523,7 @@ module.exports = class TagihanController {
                 include: [
                     { model: Tagihan, as: 'tagihanDetail' }
                 ],
-                order: [['updatedAt', 'DESC']] // FIX: Order by updatedAt untuk history
+                order: [['updatedAt', 'DESC']]
             })
 
             let tagihan = tagihanUsers.map(doc => {
@@ -510,7 +536,6 @@ module.exports = class TagihanController {
                 }
             })
 
-            // FIX: Perbaiki filter bulan
             if (month) {
                 tagihan = tagihan.filter((t) => {
                     if (!t.tagihan || !t.tagihan.tagihanDate) return false;
