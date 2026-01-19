@@ -12,7 +12,8 @@ module.exports = class DataWargaController {
                 return res.status(403).json({ error: 'Unauthorized access' });
             }
 
-            const wargaData = await DataWarga.findAll({
+            // 1. Ambil Data Warga
+            let wargaData = await DataWarga.findAll({
                 include: [
                     {
                         model: User,
@@ -21,6 +22,48 @@ module.exports = class DataWargaController {
                     }
                 ],
                 order: [['nama', 'ASC']]
+            });
+
+            // 2. Ambil Data Tagihan yang SUDAH LUNAS (status 'approved' atau 'paid')
+            // Sesuaikan status ini dengan sistem Anda (apakah 'approved', 'paid', atau 'completed')
+            const paidBills = await TagihanUser.findAll({
+                where: { 
+                    status: { [Op.or]: ['approved', 'paid'] } 
+                },
+                include: [{
+                    model: Tagihan,
+                    as: 'tagihanDetail',
+                    attributes: ['tagihanDate'] // Kita butuh tanggal untuk tahu bulannya
+                }]
+            });
+
+            // 3. Konversi ke Plain Object agar bisa kita modifikasi isinya sebelum dikirim
+            wargaData = wargaData.map(w => w.get({ plain: true }));
+
+            // 4. LOGIKA PENGGABUNGAN (Mapping)
+            // Loop setiap warga
+            wargaData.forEach(warga => {
+                // Pastikan object paymentStatus ada (antisipasi null)
+                if (!warga.paymentStatus) warga.paymentStatus = {};
+
+                // Cari tagihan milik user ini (berdasarkan ID User)
+                // Pastikan DataWarga punya relasi ke User (warga.user.id)
+                if (warga.user && warga.user.id) {
+                    const userBills = paidBills.filter(bill => bill.userId === warga.user.id);
+
+                    // Loop tagihan user tersebut
+                    userBills.forEach(bill => {
+                        if (bill.tagihanDetail && bill.tagihanDetail.tagihanDate) {
+                            const date = new Date(bill.tagihanDetail.tagihanDate);
+                            // Ubah tanggal tagihan menjadi nama bulan bahasa Inggris (January, February, dst)
+                            // Ini harus sama persis dengan list '_months' di Flutter Anda
+                            const monthName = date.toLocaleString('en-US', { month: 'long' });
+                            
+                            // FORCE UPDATE status bulan tersebut menjadi true
+                            warga.paymentStatus[monthName] = true;
+                        }
+                    });
+                }
             });
 
             return res.status(200).json({ data: wargaData });
