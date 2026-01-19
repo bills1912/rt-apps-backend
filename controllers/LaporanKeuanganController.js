@@ -1,6 +1,7 @@
 const { LaporanKeuangan, User } = require('../models');
 const { Op } = require('sequelize');
 const dayjs = require('dayjs');
+const PDFDocument = require('pdfkit');
 
 module.exports = class LaporanKeuanganController {
     // Create laporan keuangan
@@ -17,7 +18,6 @@ module.exports = class LaporanKeuanganController {
                 periode 
             } = req.body;
 
-            // Only admin can create
             if (user.role !== 'admin') {
                 return res.status(403).json({ error: 'Only admin can create financial report' });
             }
@@ -52,7 +52,6 @@ module.exports = class LaporanKeuanganController {
             const { user } = req;
             const { periode, jenisTransaksi } = req.query;
 
-            // Admin and RT can access
             if (user.role !== 'admin' && user.role !== 'rt' && user.role !== 'user') {
                 return res.status(403).json({ error: 'Unauthorized access' });
             }
@@ -90,7 +89,6 @@ module.exports = class LaporanKeuanganController {
             const { user } = req;
             const { periode } = req.query;
 
-            // Admin, RT, and User can access
             if (!['admin', 'rt', 'user'].includes(user.role)) {
                 return res.status(403).json({ error: 'Unauthorized access' });
             }
@@ -99,21 +97,18 @@ module.exports = class LaporanKeuanganController {
 
             const laporan = await LaporanKeuangan.findAll({
                 where: whereClause,
-                attributes: [
-                    'periode',
-                    'jenisTransaksi',
-                    [sequelize.fn('SUM', sequelize.col('jumlah')), 'total']
-                ],
-                group: ['periode', 'jenisTransaksi'],
                 raw: true
             });
 
             // Calculate summary
-            const summary = {};
+            const summaryMap = {};
+            
             laporan.forEach(item => {
-                if (!summary[item.periode]) {
-                    summary[item.periode] = {
-                        periode: item.periode,
+                const period = item.periode;
+                
+                if (!summaryMap[period]) {
+                    summaryMap[period] = {
+                        periode: period,
                         pemasukan: 0,
                         pengeluaran: 0,
                         saldo: 0
@@ -121,18 +116,18 @@ module.exports = class LaporanKeuanganController {
                 }
                 
                 if (item.jenisTransaksi === 'pemasukan') {
-                    summary[item.periode].pemasukan = parseFloat(item.total);
+                    summaryMap[period].pemasukan += parseFloat(item.jumlah);
                 } else {
-                    summary[item.periode].pengeluaran = parseFloat(item.total);
+                    summaryMap[period].pengeluaran += parseFloat(item.jumlah);
                 }
                 
-                summary[item.periode].saldo = 
-                    summary[item.periode].pemasukan - 
-                    summary[item.periode].pengeluaran;
+                summaryMap[period].saldo = 
+                    summaryMap[period].pemasukan - 
+                    summaryMap[period].pengeluaran;
             });
 
             return res.status(200).json({ 
-                data: Object.values(summary)
+                data: Object.values(summaryMap)
             });
         } catch (error) {
             console.log(error);
@@ -181,7 +176,6 @@ module.exports = class LaporanKeuanganController {
                 keterangan 
             } = req.body;
 
-            // Only admin can update
             if (user.role !== 'admin') {
                 return res.status(403).json({ error: 'Only admin can update' });
             }
@@ -217,7 +211,6 @@ module.exports = class LaporanKeuanganController {
             const { user } = req;
             const { id } = req.params;
 
-            // Only admin can delete
             if (user.role !== 'admin') {
                 return res.status(403).json({ error: 'Only admin can delete' });
             }
@@ -242,9 +235,7 @@ module.exports = class LaporanKeuanganController {
     static async getPeriods(req, res) {
         try {
             const periods = await LaporanKeuangan.findAll({
-                attributes: [
-                    [sequelize.fn('DISTINCT', sequelize.col('periode')), 'periode']
-                ],
+                attributes: [[LaporanKeuangan.sequelize.fn('DISTINCT', LaporanKeuangan.sequelize.col('periode')), 'periode']],
                 order: [['periode', 'DESC']],
                 raw: true
             });
@@ -257,7 +248,95 @@ module.exports = class LaporanKeuanganController {
             return res.status(500).json({ error: error.message });
         }
     }
-};
 
-// Add sequelize import at top if not exist
-const { sequelize } = require('../models');
+    // Export to PDF
+    static async exportPDF(req, res) {
+        try {
+            const { user } = req;
+            const { periode } = req.query;
+
+            if (user.role !== 'admin' && user.role !== 'rt') {
+                return res.status(403).json({ error: 'Unauthorized' });
+            }
+
+            const whereClause = periode ? { periode } : {};
+            
+            const laporan = await LaporanKeuangan.findAll({
+                where: whereClause,
+                order: [['tanggal', 'ASC']]
+            });
+
+            // Calculate totals
+            let totalPemasukan = 0;
+            let totalPengeluaran = 0;
+            
+            laporan.forEach(item => {
+                if (item.jenisTransaksi === 'pemasukan') {
+                    totalPemasukan += parseFloat(item.jumlah);
+                } else {
+                    totalPengeluaran += parseFloat(item.jumlah);
+                }
+            });
+
+            const saldoAkhir = totalPemasukan - totalPengeluaran;
+
+            // Create PDF
+            const doc = new PDFDocument({ margin: 50 });
+            
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename=laporan-keuangan-${periode || 'all'}.pdf`);
+            
+            doc.pipe(res);
+
+            // Header
+            doc.fontSize(20).text('Laporan Keuangan RT', { align: 'center' });
+            doc.fontSize(12).text(`Periode: ${periode || 'Semua'}`, { align: 'center' });
+            doc.moveDown();
+
+            // Summary
+            doc.fontSize(14).text('Ringkasan:', { underline: true });
+            doc.fontSize(12);
+            doc.text(`Total Pemasukan: Rp ${totalPemasukan.toLocaleString('id-ID')}`);
+            doc.text(`Total Pengeluaran: Rp ${totalPengeluaran.toLocaleString('id-ID')}`);
+            doc.text(`Saldo Akhir: Rp ${saldoAkhir.toLocaleString('id-ID')}`, { 
+                color: saldoAkhir >= 0 ? 'green' : 'red' 
+            });
+            doc.moveDown();
+
+            // Table Header
+            doc.fontSize(10);
+            const tableTop = doc.y;
+            const col1 = 50;
+            const col2 = 120;
+            const col3 = 220;
+            const col4 = 320;
+            const col5 = 420;
+
+            doc.text('Tanggal', col1, tableTop);
+            doc.text('Jenis', col2, tableTop);
+            doc.text('Kategori', col3, tableTop);
+            doc.text('Pihak Ketiga', col4, tableTop);
+            doc.text('Jumlah', col5, tableTop);
+
+            doc.moveTo(col1, doc.y).lineTo(550, doc.y).stroke();
+            doc.moveDown();
+
+            // Table Content
+            laporan.forEach(item => {
+                const y = doc.y;
+                doc.text(dayjs(item.tanggal).format('DD/MM/YYYY'), col1, y);
+                doc.text(item.jenisTransaksi, col2, y);
+                doc.text(item.kategori, col3, y);
+                doc.text(item.pihakKetiga || '-', col4, y);
+                doc.text(`Rp ${parseFloat(item.jumlah).toLocaleString('id-ID')}`, col5, y);
+                doc.moveDown(0.5);
+            });
+
+            doc.end();
+
+        } catch (error) {
+            console.log(error);
+            return res.status(500).json({ error: error.message });
+        }
+    }
+};

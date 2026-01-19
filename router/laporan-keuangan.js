@@ -16,6 +16,9 @@ router.get('/summary', Controller.getSummary);
 // Get available periods
 router.get('/periods', Controller.getPeriods);
 
+// Export to PDF
+router.get('/export-pdf', Controller.exportPDF);
+
 // Get by ID
 router.get('/:id', Controller.getById);
 
