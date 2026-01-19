@@ -1,5 +1,6 @@
 const { DataWarga, User, TagihanUser, Tagihan } = require('../models');
 const { Op } = require('sequelize');
+const dayjs = require('dayjs');
 
 module.exports = class DataWargaController {
 
@@ -32,8 +33,7 @@ module.exports = class DataWargaController {
             if (TagihanUser && Tagihan) {
                 const paidBills = await TagihanUser.findAll({
                     where: { 
-                        // Status lunas bisa beragam, kita masukkan semua kemungkinan
-                        status: { [Op.or]: ['approved', 'paid', 'success', 'lunas'] } 
+                        status: 'verified' // Hanya yang sudah verified
                     },
                     include: [{
                         model: Tagihan,
@@ -91,14 +91,44 @@ module.exports = class DataWargaController {
         }
     }
 
-    // Fungsi Sync (POST /sync) - Kemungkinan besar ini yang dicari router
+    // Fungsi Sync (POST /sync) - Sinkronisasi user ke data warga
     static async syncWargaData(req, res) {
         try {
-            // Logika sinkronisasi data warga dengan user
-            // Jika logic spesifiknya hilang, kita kembalikan success basic dulu agar tidak error
-            const users = await User.findAll();
-            // (Logika sync sederhana: pastikan user punya data warga)
-            return res.status(200).json({ message: 'Sync successful', count: users.length });
+            const users = await User.findAll({
+                where: { role: 'user' }
+            });
+
+            let syncedCount = 0;
+            let skippedCount = 0;
+
+            for (const user of users) {
+                // Check if data warga already exists
+                const existingWarga = await DataWarga.findOne({
+                    where: { userId: user.id }
+                });
+
+                if (existingWarga) {
+                    skippedCount++;
+                    continue;
+                }
+
+                // Create new data warga
+                await DataWarga.create({
+                    userId: user.id,
+                    nama: user.name,
+                    alamat: 'Belum diisi', // Default address
+                    paymentStatus: {}
+                });
+
+                syncedCount++;
+            }
+
+            return res.status(200).json({ 
+                message: 'Sync successful',
+                synced: syncedCount,
+                skipped: skippedCount,
+                total: users.length
+            });
         } catch (error) {
             return res.status(500).json({ error: error.message });
         }
@@ -158,7 +188,15 @@ module.exports = class DataWargaController {
     static async getPaymentStats(req, res) {
         try {
             const { month } = req.query;
-            const allWarga = await DataWarga.findAll(); // Perlu modifikasi jika ingin sync dgn Tagihan di sini juga, tapi standard dulu
+            
+            // Get all warga
+            const allWarga = await DataWarga.findAll({
+                include: [{
+                    model: User,
+                    as: 'user',
+                    attributes: ['id']
+                }]
+            });
             
             let stats = {
                 totalWarga: allWarga.length,
@@ -174,21 +212,65 @@ module.exports = class DataWargaController {
             ];
 
             if (month) {
-                const paidCount = allWarga.filter(w => (w.paymentStatus || {})[month] === true).length;
-                stats.paidCount = paidCount;
-                stats.unpaidCount = allWarga.length - paidCount;
-                stats.percentage = allWarga.length > 0 ? (paidCount / allWarga.length) * 100 : 0;
+                // Ambil data pembayaran verified untuk bulan tertentu
+                const paidBills = await TagihanUser.findAll({
+                    where: { status: 'verified' },
+                    include: [{
+                        model: Tagihan,
+                        as: 'tagihanDetail',
+                        attributes: ['tagihanDate'],
+                        required: true
+                    }]
+                });
+
+                // Filter by month
+                const paidUserIds = new Set();
+                paidBills.forEach(bill => {
+                    if (bill.tagihanDetail && bill.tagihanDetail.tagihanDate) {
+                        const billMonth = dayjs(bill.tagihanDetail.tagihanDate).format('MMMM');
+                        if (billMonth === month) {
+                            paidUserIds.add(bill.userId);
+                        }
+                    }
+                });
+
+                stats.paidCount = paidUserIds.size;
+                stats.unpaidCount = allWarga.length - stats.paidCount;
+                stats.percentage = allWarga.length > 0 ? (stats.paidCount / allWarga.length) * 100 : 0;
             } else {
+                // Monthly stats for all months
+                const paidBills = await TagihanUser.findAll({
+                    where: { status: 'verified' },
+                    include: [{
+                        model: Tagihan,
+                        as: 'tagihanDetail',
+                        attributes: ['tagihanDate'],
+                        required: true
+                    }]
+                });
+
                 months.forEach(m => {
-                    const paidCount = allWarga.filter(w => (w.paymentStatus || {})[m] === true).length;
+                    const paidUserIds = new Set();
+                    
+                    paidBills.forEach(bill => {
+                        if (bill.tagihanDetail && bill.tagihanDetail.tagihanDate) {
+                            const billMonth = dayjs(bill.tagihanDetail.tagihanDate).format('MMMM');
+                            if (billMonth === m) {
+                                paidUserIds.add(bill.userId);
+                            }
+                        }
+                    });
+
                     stats.monthlyStats[m] = {
-                        paid: paidCount,
-                        unpaid: allWarga.length - paidCount
+                        paid: paidUserIds.size,
+                        unpaid: allWarga.length - paidUserIds.size
                     };
                 });
             }
+            
             return res.status(200).json({ data: stats });
         } catch (error) {
+            console.log('Error in getPaymentStats:', error);
             return res.status(500).json({ error: error.message });
         }
     }
