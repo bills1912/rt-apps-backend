@@ -1,10 +1,3 @@
-// Add this line after other route imports in app.js
-const dataWargaRoutes = require('./router/data-warga')
-
-// Add this line after other route uses
-app.use('/api/data-warga', dataWargaRoutes)
-
-// Full updated app.js:
 const express = require('express')
 const cors = require('cors')
 const helmet = require('helmet')
@@ -23,6 +16,7 @@ const server = http.createServer(app);
 const authRoutes = require('./router/auth')
 const tagihanRoutes = require('./router/tagihan')
 const notificationRoutes = require('./router/notification')
+const dataWargaRoutes = require('./router/data-warga')
 
 app.use(compression())
 app.use(helmet())
@@ -47,6 +41,7 @@ app.use(requestLogger)
 app.use('/api/auth', authRoutes)
 app.use('/api/tagihan', tagihanRoutes)
 app.use('/api/notification', notificationRoutes)
+app.use('/api/data-warga', dataWargaRoutes)
 
 app.use((req, res) => {
     res.status(404).json({ message: 'not found' });
