@@ -1,7 +1,8 @@
-const { DataWarga, User } = require('../models');
+const { DataWarga, User, TagihanUser, Tagihan } = require('../models'); // Pastikan semua model di-import
 const { Op } = require('sequelize');
 
 module.exports = class DataWargaController {
+    
     // Get all warga with payment status
     static async getAllWarga(req, res) {
         try {
@@ -24,56 +25,66 @@ module.exports = class DataWargaController {
                 order: [['nama', 'ASC']]
             });
 
-            // 2. Ambil Data Tagihan yang SUDAH LUNAS (status 'approved' atau 'paid')
-            // Sesuaikan status ini dengan sistem Anda (apakah 'approved', 'paid', atau 'completed')
-            const paidBills = await TagihanUser.findAll({
-                where: { 
-                    status: { [Op.or]: ['approved', 'paid'] } 
-                },
-                include: [{
-                    model: Tagihan,
-                    as: 'tagihanDetail',
-                    attributes: ['tagihanDate'] // Kita butuh tanggal untuk tahu bulannya
-                }]
-            });
-
-            // 3. Konversi ke Plain Object agar bisa kita modifikasi isinya sebelum dikirim
+            // Ubah ke plain object agar bisa diedit
             wargaData = wargaData.map(w => w.get({ plain: true }));
 
-            // 4. LOGIKA PENGGABUNGAN (Mapping)
-            // Loop setiap warga
-            wargaData.forEach(warga => {
-                // Pastikan object paymentStatus ada (antisipasi null)
-                if (!warga.paymentStatus) warga.paymentStatus = {};
+            // 2. Ambil Data Tagihan yang LUNAS
+            // Cek apakah model Tagihan tersedia untuk menghindari crash
+            if (TagihanUser && Tagihan) {
+                const paidBills = await TagihanUser.findAll({
+                    where: { 
+                        // Sesuaikan status dengan database Anda ('approved', 'paid', 'success', 'lunas')
+                        status: { [Op.or]: ['approved', 'paid', 'success', 'lunas'] } 
+                    },
+                    include: [{
+                        model: Tagihan,
+                        as: 'tagihanDetail',
+                        attributes: ['tagihanDate']
+                    }]
+                });
 
-                // Cari tagihan milik user ini (berdasarkan ID User)
-                // Pastikan DataWarga punya relasi ke User (warga.user.id)
-                if (warga.user && warga.user.id) {
-                    const userBills = paidBills.filter(bill => bill.userId === warga.user.id);
+                // List nama bulan hardcoded agar tidak error locale/bahasa
+                const monthNames = [
+                    'January', 'February', 'March', 'April', 'May', 'June',
+                    'July', 'August', 'September', 'October', 'November', 'December'
+                ];
 
-                    // Loop tagihan user tersebut
-                    userBills.forEach(bill => {
-                        if (bill.tagihanDetail && bill.tagihanDetail.tagihanDate) {
-                            const date = new Date(bill.tagihanDetail.tagihanDate);
-                            // Ubah tanggal tagihan menjadi nama bulan bahasa Inggris (January, February, dst)
-                            // Ini harus sama persis dengan list '_months' di Flutter Anda
-                            const monthName = date.toLocaleString('en-US', { month: 'long' });
-                            
-                            // FORCE UPDATE status bulan tersebut menjadi true
-                            warga.paymentStatus[monthName] = true;
-                        }
-                    });
-                }
-            });
+                // 3. Mapping Pembayaran ke Warga
+                wargaData.forEach(warga => {
+                    // Inisialisasi object paymentStatus jika null
+                    if (!warga.paymentStatus) warga.paymentStatus = {};
+
+                    // Jika warga terhubung dengan user
+                    if (warga.user && warga.user.id) {
+                        // Cari semua tagihan milik user ini
+                        const userBills = paidBills.filter(b => b.userId === warga.user.id);
+
+                        userBills.forEach(bill => {
+                            // Cek kelengkapan data tagihan
+                            if (bill.tagihanDetail && bill.tagihanDetail.tagihanDate) {
+                                const date = new Date(bill.tagihanDetail.tagihanDate);
+                                const monthIndex = date.getMonth(); // 0 - 11
+                                const monthName = monthNames[monthIndex]; // Ambil nama bulan dari array
+                                
+                                if (monthName) {
+                                    warga.paymentStatus[monthName] = true;
+                                }
+                            }
+                        });
+                    }
+                });
+            } else {
+                console.log("Warning: Model TagihanUser atau Tagihan tidak ditemukan/null");
+            }
 
             return res.status(200).json({ data: wargaData });
         } catch (error) {
-            console.log(error);
+            console.log("Error di getAllWarga:", error);
             return res.status(500).json({ error: error.message });
         }
     }
 
-    // Update payment status for specific month
+    // Update payment status for specific month (Manual Toggle)
     static async updatePaymentStatus(req, res) {
         try {
             const { user } = req;
@@ -90,77 +101,19 @@ module.exports = class DataWargaController {
                 return res.status(404).json({ error: 'Warga not found' });
             }
 
-            // Update payment status for specific month
-            const currentStatus = warga.paymentStatus || {};
-            currentStatus[month] = status;
-
-            await warga.update({
-                paymentStatus: currentStatus
-            });
-
-            return res.status(200).json({ 
-                message: 'Payment status updated successfully',
-                data: warga 
-            });
-        } catch (error) {
-            console.log(error);
-            return res.status(500).json({ error: error.message });
-        }
-    }
-
-    // Sync all users to data_warga (run this once or when new users are added)
-    static async syncWargaData(req, res) {
-        try {
-            const { user } = req;
-
-            // Only admin can sync
-            if (user.role !== 'admin') {
-                return res.status(403).json({ error: 'Only admin can sync data' });
-            }
-
-            // Get all users with role 'user'
-            const users = await User.findAll({
-                where: { role: 'user' }
-            });
-
-            const defaultPaymentStatus = {
-                January: false,
-                February: false,
-                March: false,
-                April: false,
-                May: false,
-                June: false,
-                July: false,
-                August: false,
-                September: false,
-                October: false,
-                November: false,
-                December: false
+            let currentStatus = warga.paymentStatus || {};
+            
+            // Update status for specific month
+            currentStatus = {
+                ...currentStatus,
+                [month]: status
             };
 
-            // Create or update data_warga entries
-            for (const user of users) {
-                const [warga, created] = await DataWarga.findOrCreate({
-                    where: { userId: user.id },
-                    defaults: {
-                        userId: user.id,
-                        nama: user.name,
-                        alamat: '-', // Default value, should be updated
-                        paymentStatus: defaultPaymentStatus
-                    }
-                });
-
-                if (!created) {
-                    // Update nama if changed
-                    await warga.update({
-                        nama: user.name
-                    });
-                }
-            }
+            await warga.update({ paymentStatus: currentStatus });
 
             return res.status(200).json({ 
-                message: 'Data warga synced successfully',
-                totalSynced: users.length 
+                message: 'Payment status updated',
+                data: warga 
             });
         } catch (error) {
             console.log(error);
@@ -171,36 +124,42 @@ module.exports = class DataWargaController {
     // Get payment statistics
     static async getPaymentStats(req, res) {
         try {
-            const { user } = req;
             const { month } = req.query;
-
-            // Only admin and RT can access
-            if (user.role !== 'admin' && user.role !== 'rt') {
-                return res.status(403).json({ error: 'Unauthorized access' });
-            }
-
+            
             const allWarga = await DataWarga.findAll();
             
             let stats = {
                 totalWarga: allWarga.length,
+                paidCount: 0,
+                unpaidCount: 0,
+                percentage: 0,
                 monthlyStats: {}
             };
 
+            const months = [
+                'January', 'February', 'March', 'April', 'May', 'June',
+                'July', 'August', 'September', 'October', 'November', 'December'
+            ];
+
+            // Jika ada filter bulan tertentu
             if (month) {
-                // Get stats for specific month
-                const paidCount = allWarga.filter(w => w.paymentStatus[month] === true).length;
-                stats.monthlyStats[month] = {
-                    paid: paidCount,
-                    unpaid: allWarga.length - paidCount
-                };
+                const paidCount = allWarga.filter(w => {
+                    const status = w.paymentStatus || {};
+                    return status[month] === true;
+                }).length;
+
+                stats.paidCount = paidCount;
+                stats.unpaidCount = allWarga.length - paidCount;
+                stats.percentage = allWarga.length > 0 ? (paidCount / allWarga.length) * 100 : 0;
             } else {
-                // Get stats for all months
-                const months = ['January', 'February', 'March', 'April', 'May', 'June', 
-                               'July', 'August', 'September', 'October', 'November', 'December'];
-                
-                months.forEach(month => {
-                    const paidCount = allWarga.filter(w => w.paymentStatus[month] === true).length;
-                    stats.monthlyStats[month] = {
+                // Statistik untuk semua bulan
+                months.forEach(m => {
+                    const paidCount = allWarga.filter(w => {
+                        const status = w.paymentStatus || {};
+                        return status[m] === true;
+                    }).length;
+                    
+                    stats.monthlyStats[m] = {
                         paid: paidCount,
                         unpaid: allWarga.length - paidCount
                     };
