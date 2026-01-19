@@ -76,6 +76,8 @@ module.exports = class LaporanKeuanganController {
                 order: [['tanggal', 'DESC']]
             });
 
+            console.log(`📊 Found ${laporan.length} laporan records for periode: ${periode || 'all'}`);
+
             return res.status(200).json({ data: laporan });
         } catch (error) {
             console.log(error);
