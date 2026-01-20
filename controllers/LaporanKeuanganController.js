@@ -469,8 +469,24 @@ module.exports = class LaporanKeuanganController {
             const { user } = req;
             const { periode } = req.query;
 
-            if (user.role !== 'admin' && user.role !== 'rt') {
+            if (!['admin', 'rt', 'user'].includes(user.role)) {
                 return res.status(403).json({ error: 'Unauthorized' });
+            }
+
+            if (user.role === 'user') {
+                if (!periode) {
+                    return res.status(400).json({ error: 'Periode required for user export' });
+                }
+                
+                const isPublished = await PublishedLaporan.findOne({
+                    where: { periode }
+                });
+
+                if (!isPublished) {
+                    return res.status(403).json({ 
+                        error: 'Laporan ini belum dipublikasikan oleh Admin' 
+                    });
+                }
             }
 
             const whereClause = periode ? { periode } : {};
