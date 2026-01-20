@@ -19,6 +19,12 @@ router.get('/periods', Controller.getPeriods);
 // Export to PDF
 router.get('/export-pdf', Controller.exportPDF);
 
+// Get published reports (for users)
+router.get('/published', Controller.getPublished);
+
+// Get published summary (for users)
+router.get('/published/summary', Controller.getPublishedSummary);
+
 // Get by ID
 router.get('/:id', Controller.getById);
 
@@ -32,6 +38,12 @@ router.post('/', [
     body('jumlah').notEmpty().withMessage('Jumlah is required')
         .isNumeric().withMessage('Jumlah must be numeric')
 ], payloadValidation, Controller.create);
+
+// Publish laporan to warga
+router.post('/publish', [
+    body('periode').notEmpty().withMessage('Periode is required')
+        .matches(/^\d{4}-\d{2}$/).withMessage('Invalid periode format (YYYY-MM)')
+], payloadValidation, Controller.publishToWarga);
 
 // Update laporan
 router.put('/:id', [
