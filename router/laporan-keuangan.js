@@ -19,6 +19,9 @@ router.get('/periods', Controller.getPeriods);
 // Export to PDF
 router.get('/export-pdf', Controller.exportPDF);
 
+// Get list of published periods (for users)
+router.get('/published/periods', Controller.getPublishedPeriods);
+
 // Get published reports (for users)
 router.get('/published', Controller.getPublished);
 
