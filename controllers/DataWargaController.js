@@ -192,7 +192,7 @@ module.exports = class DataWargaController {
         }
     }
 
-    // Get Payment Stats
+    // Get Payment Stats - PERBAIKAN UTAMA
     static async getPaymentStats(req, res) {
         try {
             const { month } = req.query;
@@ -211,14 +211,6 @@ module.exports = class DataWargaController {
             
             console.log(`👥 Total warga found: ${allWarga.length}`);
             
-            let stats = {
-                totalWarga: allWarga.length,
-                paidCount: 0,
-                unpaidCount: 0,
-                percentage: 0,
-                monthlyStats: {}
-            };
-
             const months = [
                 'January', 'February', 'March', 'April', 'May', 'June',
                 'July', 'August', 'September', 'October', 'November', 'December'
@@ -238,6 +230,12 @@ module.exports = class DataWargaController {
 
             console.log(`💰 Total verified payments found: ${paidBills.length}`);
 
+            // PERBAIKAN: Selalu return monthlyStats
+            let stats = {
+                totalWarga: allWarga.length,
+                monthlyStats: {}
+            };
+
             if (month) {
                 // Stats untuk bulan tertentu
                 const paidUserIds = new Set();
@@ -247,20 +245,22 @@ module.exports = class DataWargaController {
                         const billDate = new Date(bill.tagihanDetail.tagihanDate);
                         const billMonth = months[billDate.getMonth()];
                         
-                        console.log(`📅 Bill from user ${bill.userId}: ${billMonth}`);
-                        
                         if (billMonth === month) {
                             paidUserIds.add(bill.userId);
-                            console.log(`✅ User ${bill.userId} paid in ${month}`);
                         }
                     }
                 });
 
-                stats.paidCount = paidUserIds.size;
-                stats.unpaidCount = allWarga.length - stats.paidCount;
-                stats.percentage = allWarga.length > 0 ? (stats.paidCount / allWarga.length) * 100 : 0;
+                const paidCount = paidUserIds.size;
+                const unpaidCount = allWarga.length - paidCount;
                 
-                console.log(`📈 Stats for ${month}: ${stats.paidCount} paid, ${stats.unpaidCount} unpaid`);
+                // PERBAIKAN: Tambahkan ke monthlyStats
+                stats.monthlyStats[month] = {
+                    paid: paidCount,
+                    unpaid: unpaidCount
+                };
+                
+                console.log(`📈 Stats for ${month}: ${paidCount} paid, ${unpaidCount} unpaid`);
             } else {
                 // Monthly stats untuk semua bulan
                 months.forEach(m => {
@@ -283,6 +283,8 @@ module.exports = class DataWargaController {
                     };
                 });
             }
+            
+            console.log('📊 Final stats:', JSON.stringify(stats, null, 2));
             
             return res.status(200).json({ data: stats });
         } catch (error) {
