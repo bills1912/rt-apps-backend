@@ -4,18 +4,40 @@ const dayjs = require('dayjs');
 
 module.exports = class DataWargaController {
 
-    // --- 1. FITUR UTAMA: GET ALL (Dengan Logika Centang Hijau Otomatis) ---
+    // --- 1. FITUR UTAMA: GET ALL (Dengan Logika Centang Hijau Otomatis + Pagination + Search) ---
     static async getAllWarga(req, res) {
         try {
-            const { user } = req;
+            const { user, query } = req;
+            const { page = 1, limit = 10, search = '' } = query;
             
             // Security check
             if (user.role !== 'admin' && user.role !== 'rt') {
                 return res.status(403).json({ error: 'Unauthorized access' });
             }
 
-            // A. Ambil Data Warga
+            // Build search condition
+            const whereClause = {};
+            if (search && search.trim() !== '') {
+                whereClause.nama = { [Op.like]: `%${search}%` };
+            }
+
+            // Calculate offset
+            const offset = (parseInt(page) - 1) * parseInt(limit);
+
+            // A. Get total count for pagination
+            const totalCount = await DataWarga.count({
+                where: whereClause,
+                include: [{
+                    model: User,
+                    as: 'user',
+                    attributes: ['id'],
+                    where: { role: 'user' }
+                }]
+            });
+
+            // B. Ambil Data Warga with pagination
             let wargaData = await DataWarga.findAll({
+                where: whereClause,
                 include: [
                     {
                         model: User,
@@ -23,10 +45,12 @@ module.exports = class DataWargaController {
                         attributes: ['id', 'name', 'kk', 'role']
                     }
                 ],
-                order: [['nama', 'ASC']]
+                order: [['nama', 'ASC']],
+                limit: parseInt(limit),
+                offset: offset
             });
 
-            console.log(`👥 Found ${wargaData.length} warga records`);
+            console.log(`👥 Found ${wargaData.length} warga records (Page ${page}, Search: "${search}")`);
 
             // Convert ke plain object
             wargaData = wargaData.map(w => w.get({ plain: true }));
@@ -76,7 +100,21 @@ module.exports = class DataWargaController {
 
             console.log('✅ Data warga with payment status prepared');
 
-            return res.status(200).json({ data: wargaData });
+            // Prepare pagination metadata
+            const totalPages = Math.ceil(totalCount / parseInt(limit));
+            const pagination = {
+                currentPage: parseInt(page),
+                totalPages: totalPages,
+                totalItems: totalCount,
+                itemsPerPage: parseInt(limit),
+                hasNextPage: parseInt(page) < totalPages,
+                hasPrevPage: parseInt(page) > 1
+            };
+
+            return res.status(200).json({ 
+                data: wargaData,
+                pagination: pagination
+            });
         } catch (error) {
             console.error("❌ Error getAllWarga:", error);
             return res.status(500).json({ error: error.message });
